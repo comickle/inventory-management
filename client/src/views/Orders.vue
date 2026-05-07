@@ -27,7 +27,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card orders-card">
         <div class="card-header">
           <h3 class="card-title">{{ t('orders.allOrders') }} ({{ orders.length }})</h3>
         </div>
@@ -74,6 +74,53 @@
           </table>
         </div>
       </div>
+
+      <!-- Submitted Restocking Orders -->
+      <div class="card restocking-orders-card">
+        <div class="card-header">
+          <h3 class="card-title">Submitted Restocking Orders ({{ restockingOrders.length }})</h3>
+        </div>
+        <div v-if="restockingLoading" class="loading">Loading...</div>
+        <div v-else-if="restockingOrders.length === 0" class="empty-restocking">
+          No restocking orders submitted yet.
+        </div>
+        <div v-else class="table-container">
+          <table class="restocking-table">
+            <thead>
+              <tr>
+                <th class="col-order-number">Order Number</th>
+                <th class="col-items">Items</th>
+                <th class="col-value">Total Cost</th>
+                <th class="col-date">Submitted</th>
+                <th class="col-date">Expected Delivery</th>
+                <th class="col-status">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="order in restockingOrders" :key="order.id">
+                <td class="col-order-number"><strong>{{ order.order_number }}</strong></td>
+                <td class="col-items">
+                  <details class="items-details">
+                    <summary class="items-summary">{{ order.item_count }} item(s)</summary>
+                    <div class="items-dropdown">
+                      <div v-for="(item, idx) in order.items" :key="idx" class="item-entry">
+                        <span class="item-name">{{ item.name }} ({{ item.sku }})</span>
+                        <span class="item-meta">{{ item.units_needed }} units @ ${{ item.unit_cost.toFixed(2) }} = ${{ item.total_cost.toLocaleString() }}</span>
+                      </div>
+                    </div>
+                  </details>
+                </td>
+                <td class="col-value"><strong>${{ order.total_cost.toLocaleString() }}</strong></td>
+                <td class="col-date">{{ formatDate(order.submitted_date) }}</td>
+                <td class="col-date">{{ formatDate(order.expected_delivery) }}</td>
+                <td class="col-status">
+                  <span class="badge info">{{ order.status }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -95,6 +142,8 @@ export default {
     const loading = ref(true)
     const error = ref(null)
     const orders = ref([])
+    const restockingOrders = ref([])
+    const restockingLoading = ref(false)
 
     // Use shared filters
     const {
@@ -153,13 +202,30 @@ export default {
       })
     }
 
-    onMounted(loadOrders)
+    const loadRestockingOrders = async () => {
+      try {
+        restockingLoading.value = true
+        restockingOrders.value = await api.getRestockingOrders()
+      } catch (err) {
+        // Silent fail — section stays empty if backend has no restocking orders yet
+        console.error('Failed to load restocking orders:', err)
+      } finally {
+        restockingLoading.value = false
+      }
+    }
+
+    onMounted(() => {
+      loadOrders()
+      loadRestockingOrders()
+    })
 
     return {
       t,
       loading,
       error,
       orders,
+      restockingOrders,
+      restockingLoading,
       getOrdersByStatus,
       getOrderStatusClass,
       formatDate,
@@ -275,5 +341,22 @@ export default {
 .item-meta {
   font-size: 0.813rem;
   color: #64748b;
+}
+
+/* ── Restocking orders section ── */
+.restocking-orders-card {
+  margin-top: 1.5rem;
+}
+
+.restocking-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.empty-restocking {
+  padding: 2rem;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.9rem;
 }
 </style>

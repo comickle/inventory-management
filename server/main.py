@@ -6,6 +6,9 @@ from mock_data import inventory_items, orders, demand_forecasts, backlog_items, 
 
 app = FastAPI(title="Factory Inventory Management System")
 
+# In-memory restocking orders (not persisted — resets on server restart)
+restocking_orders: list = []
+
 # Quarter mapping for date filtering
 QUARTER_MAP = {
     'Q1-2025': ['2025-01', '2025-02', '2025-03'],
@@ -120,6 +123,40 @@ class CreatePurchaseOrderRequest(BaseModel):
     expected_delivery_date: str
     notes: Optional[str] = None
 
+class RestockingRecommendation(BaseModel):
+    id: str
+    sku: str
+    name: str
+    category: str
+    warehouse: str
+    quantity_on_hand: int
+    reorder_point: int
+    units_needed: int   # reorder_point - quantity_on_hand
+    unit_cost: float
+    total_cost: float   # units_needed * unit_cost
+    urgency: int        # same as units_needed, used as sort key
+
+class RestockingOrderItem(BaseModel):
+    inventory_item_id: str
+    sku: str
+    name: str
+    units_needed: int
+    unit_cost: float
+    total_cost: float
+
+class CreateRestockingOrderRequest(BaseModel):
+    items: List[RestockingOrderItem]
+
+class RestockingOrder(BaseModel):
+    id: str
+    order_number: str       # RST-0001, RST-0002, ...
+    items: List[RestockingOrderItem]
+    item_count: int
+    total_cost: float
+    submitted_date: str     # YYYY-MM-DD
+    expected_delivery: str  # submitted_date + 14 days
+    status: str             # always "Submitted" at creation
+
 # API endpoints
 @app.get("/")
 def root():
@@ -160,6 +197,60 @@ def get_order(order_id: str):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
+
+@app.get("/api/restocking/recommendations", response_model=List[RestockingRecommendation])
+def get_restocking_recommendations():
+    """Return inventory items below reorder point, sorted by urgency descending."""
+    below_reorder = [
+        item for item in inventory_items
+        if item["quantity_on_hand"] < item["reorder_point"]
+    ]
+    recs = []
+    for item in below_reorder:
+        units_needed = item["reorder_point"] - item["quantity_on_hand"]
+        recs.append({
+            "id": item["id"],
+            "sku": item["sku"],
+            "name": item["name"],
+            "category": item["category"],
+            "warehouse": item["warehouse"],
+            "quantity_on_hand": item["quantity_on_hand"],
+            "reorder_point": item["reorder_point"],
+            "units_needed": units_needed,
+            "unit_cost": item["unit_cost"],
+            "total_cost": round(units_needed * item["unit_cost"], 2),
+            "urgency": units_needed,
+        })
+    recs.sort(key=lambda x: x["urgency"], reverse=True)
+    return recs
+
+@app.post("/api/restocking/orders", response_model=RestockingOrder, status_code=201)
+def create_restocking_order(request: CreateRestockingOrderRequest):
+    """Submit a restocking order. Lead time is fixed at 14 days."""
+    from datetime import date, timedelta
+    import uuid
+
+    if not request.items:
+        raise HTTPException(status_code=400, detail="Order must contain at least one item")
+
+    today = date.today()
+    new_order = {
+        "id": str(uuid.uuid4()),
+        "order_number": f"RST-{len(restocking_orders) + 1:04d}",
+        "items": [item.model_dump() for item in request.items],
+        "item_count": len(request.items),
+        "total_cost": round(sum(item.total_cost for item in request.items), 2),
+        "submitted_date": today.isoformat(),
+        "expected_delivery": (today + timedelta(days=14)).isoformat(),
+        "status": "Submitted",
+    }
+    restocking_orders.append(new_order)
+    return new_order
+
+@app.get("/api/restocking/orders", response_model=List[RestockingOrder])
+def get_restocking_orders():
+    """Return all submitted restocking orders, most recent first."""
+    return list(reversed(restocking_orders))
 
 @app.get("/api/demand", response_model=List[DemandForecast])
 def get_demand_forecasts():
